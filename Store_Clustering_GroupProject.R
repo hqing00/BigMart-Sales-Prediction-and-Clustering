@@ -1,3 +1,9 @@
+library(tidyverse)
+library(ggplot2)
+library(cluster)
+library(factoextra)
+library(gridExtra)
+
 # Load Dataset
 df <- read.csv("imputed_train.csv")
 
