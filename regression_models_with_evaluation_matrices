@@ -1,0 +1,189 @@
+# loading libs
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(e1071)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(xgboost)
+library(gbm)
+library(jsonlite)
+
+# loading dataset
+df <- read.csv("train_dataset.csv")
+
+cat("\n\n")
+print("We will now COMPUTE various kinds of REGRESSION on our BigMart dataset")
+cat("\n\n")
+
+# cleaning vals
+df$Item_Fat_Content <- recode(df$Item_Fat_Content,
+                              'LF' = 'Low Fat',
+                              'low fat' = 'Low Fat',
+                              'reg' = 'Regular')
+
+# imputing missing vals
+df$Item_Weight[is.na(df$Item_Weight)] <- median(df$Item_Weight, na.rm = TRUE)
+mode_val <- names(sort(table(df$Outlet_Size), decreasing = TRUE))[1]
+df$Outlet_Size[is.na(df$Outlet_Size)] <- mode_val
+
+# selecting vals
+selected_columns <- c(
+  "Item_Weight", "Item_Fat_Content", "Item_Visibility", "Item_Type", 
+  "Item_MRP", "Outlet_Identifier", "Outlet_Establishment_Year", 
+  "Outlet_Size", "Outlet_Location_Type", "Outlet_Type", 
+  "Item_Outlet_Sales"  # target variable /nirvar_track_1
+)
+
+df <- df %>% select(all_of(selected_columns))
+
+# converting categorical variables to factors
+cat_vars <- c("Item_Fat_Content", "Item_Type", "Outlet_Identifier",
+              "Outlet_Size", "Outlet_Location_Type", "Outlet_Type")
+df[cat_vars] <- lapply(df[cat_vars], as.factor)
+
+# used min and max to normalize the target var
+min_sales <- min(df$Item_Outlet_Sales)
+max_sales <- max(df$Item_Outlet_Sales)
+
+
+# using one-hot encoding to categorical variables
+dummy <- dummyVars(" ~ .", data = df)
+df_encoded <- data.frame(predict(dummy, newdata = df))
+
+# splitting the dataset into 80:20 ratio
+set.seed(123)
+index <- createDataPartition(df_encoded$Item_Outlet_Sales, p = 0.8, list = FALSE)
+train <- df_encoded[index, ]
+test <- df_encoded[-index, ] 
+
+# preparing matrices
+x_train <- as.matrix(train[, -ncol(train)])
+y_train <- train$Item_Outlet_Sales
+x_test <- as.matrix(test[, -ncol(test)])
+y_test <- test$Item_Outlet_Sales
+
+
+
+# traing the models and prediction for the test set
+lm_model <- lm(Item_Outlet_Sales ~ ., data = train)
+lm_pred <- predict(lm_model, newdata = test)
+
+ridge_model <- cv.glmnet(x_train, y_train, alpha = 0)
+ridge_pred <- predict(ridge_model, s = "lambda.min", newx = x_test)
+
+lasso_model <- cv.glmnet(x_train, y_train, alpha = 1)
+lasso_pred <- predict(lasso_model, s = "lambda.min", newx = x_test)
+
+elastic_model <- cv.glmnet(x_train, y_train, alpha = 0.5)
+elastic_pred <- predict(elastic_model, s = "lambda.min", newx = x_test)
+
+poly_model <- lm(Item_Outlet_Sales ~ poly(Item_MRP, 2), data = train)
+poly_pred <- predict(poly_model, newdata = test)
+
+tree_model <- rpart(Item_Outlet_Sales ~ ., data = train, method = "anova")
+tree_pred <- predict(tree_model, newdata = test)
+
+rf_model <- randomForest(Item_Outlet_Sales ~ ., data = train, ntree = 100)
+rf_pred <- predict(rf_model, newdata = test)
+
+svr_model <- svm(Item_Outlet_Sales ~ ., data = train)
+svr_pred <- predict(svr_model, newdata = test)
+
+gbm_model <- gbm(Item_Outlet_Sales ~ ., data = train, distribution = "gaussian",
+                 n.trees = 100, interaction.depth = 3, shrinkage = 0.1, cv.folds = 5)
+best_iter <- gbm.perf(gbm_model, method = "cv", plot.it = FALSE)
+gbm_pred <- predict(gbm_model, newdata = test, n.trees = best_iter)
+
+dtrain <- xgb.DMatrix(data = x_train, label = y_train)
+dtest <- xgb.DMatrix(data = x_test)
+xgb_model <- xgboost(data = dtrain, nrounds = 100, objective = "reg:squarederror", verbose = 0)
+xgb_pred <- predict(xgb_model, newdata = dtest)
+
+# ensuring all the predictions are vectors since some of the eval fn expects vector
+ridge_pred   <- as.vector(ridge_pred)
+lasso_pred   <- as.vector(lasso_pred)
+elastic_pred <- as.vector(elastic_pred)
+gbm_pred     <- as.vector(gbm_pred)
+xgb_pred     <- as.vector(xgb_pred)
+
+
+
+# combining predictions in a dataframe
+reg_results <- data.frame(
+  Actual_Item_Sales = test$Item_Outlet_Sales,
+  Linear        = lm_pred,
+  Ridge         = ridge_pred,
+  Lasso         = lasso_pred,
+  Elastic       = elastic_pred,
+  Decision      = tree_pred,
+  Random_Forest = rf_pred,
+  GBM           = gbm_pred,
+  SVR           = svr_pred,
+  XGBoost       = xgb_pred
+)
+
+print(head(reg_results))
+
+normalize <- function(x, min_val, max_val) {
+  (x - min_val) / (max_val - min_val)
+}
+
+
+# error metrics
+rmse <- function(actual, predicted) sqrt(mean((actual - predicted)^2))
+mae <- function(actual, predicted) mean(abs(actual - predicted))
+r2 <- function(actual, predicted) 1 - sum((actual - predicted)^2) / sum((actual - mean(actual))^2)
+mape <- function(actual, predicted) mean(abs((actual - predicted) / actual)) * 100
+smape <- function(actual, predicted) mean(2 * abs(predicted - actual) / (abs(actual) + abs(predicted))) * 100
+explained_variance <- function(actual, predicted) 1 - var(actual - predicted) / var(actual)
+
+evaluate_model <- function(name, actual, predicted) {
+  data.frame(
+    Model = name,
+    RMSE = rmse(actual, predicted),
+    MAE = mae(actual, predicted),
+    R2 = r2(actual, predicted),
+    MAPE = mape(actual, predicted),
+    SMAPE = smape(actual, predicted),
+    Explained_Variance = explained_variance(actual, predicted)
+  )
+}
+
+
+
+# normalizing actual and predicted values just for evaluation
+y_test_norm <- normalize(y_test, min_sales, max_sales)
+
+results <- rbind(
+  evaluate_model("Linear", y_test_norm, normalize(lm_pred, min_sales, max_sales)),
+  evaluate_model("Ridge", y_test_norm, normalize(ridge_pred, min_sales, max_sales)),
+  evaluate_model("Lasso", y_test_norm, normalize(lasso_pred, min_sales, max_sales)),
+  evaluate_model("Elastic", y_test_norm, normalize(elastic_pred, min_sales, max_sales)),
+  evaluate_model("Polynomial", y_test_norm, normalize(poly_pred, min_sales, max_sales)),
+  evaluate_model("Decision", y_test_norm, normalize(tree_pred, min_sales, max_sales)),
+  evaluate_model("Random Forest", y_test_norm, normalize(rf_pred, min_sales, max_sales)),
+  evaluate_model("GBM", y_test_norm, normalize(gbm_pred, min_sales, max_sales)),
+  evaluate_model("SVR", y_test_norm, normalize(svr_pred, min_sales, max_sales)),
+  evaluate_model("XGBoost", y_test_norm, normalize(xgb_pred, min_sales, max_sales))
+)
+
+
+
+cat("\n\nThe ERROR METRICS are provided below:\n\n")
+print(results)
+
+#combining the error matrics
+all_predictions <- data.frame(
+  Actual_Depression = y_test,
+  Linear_Prediction = lm_pred,
+  Ridge_Prediction = as.vector(ridge_pred),
+  Lasso_Prediction = as.vector(lasso_pred),
+  Elastic_Prediction = as.vector(elastic_pred),
+  DecisionTree_Prediction = tree_pred,
+  RandomForest_Prediction = rf_pred,
+  GBM_Prediction = as.vector(gbm_pred),
+  SVR_Prediction = svr_pred,
+  XGBoost_Prediction = xgb_pred
+)
