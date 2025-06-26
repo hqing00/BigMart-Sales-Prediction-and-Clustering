@@ -8,6 +8,22 @@ This project was developed as part of a coursework assignment in Programming for
 ## Data
 The data is obtained from https://www.kaggle.com/datasets/brijbhushannanda1979/bigmart-sales-data/data
 
+## Contents
+**Modeling**
+- Linear Regression
+- Ridge Regression
+- Lasso Regression
+- Elastic-net regularized generalized linear model
+- Decision Tree
+- Random Forest
+- GBM
+- SVR
+- XGBoost
+
+**Clustering**  
+- K-Means Clustering
+- Hierarchical clustering
+
 ## Team Members
 1. Chew Hong Ern
 2. Yap Hui Qing
